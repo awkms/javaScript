@@ -30,8 +30,19 @@
            getComputedStyle(el).visibility !== 'hidden';
   }
 
+  // true: 버튼을 기다리지 않고 광고 영상을 즉시 끝으로 넘김 (건너뛰기 불가 광고도 해당)
+  // false: 버튼이 나타난 뒤에만 클릭 (기존 동작)
+  const FAST_FORWARD = true;
+
   function trySkip() {
     if (!player) return;
+    if (FAST_FORWARD) {
+      const video = player.querySelector('video.html5-main-video');
+      if (video && isFinite(video.duration) && video.duration > 0 &&
+          video.currentTime < video.duration - 0.1) {
+        video.currentTime = video.duration;
+      }
+    }
     const btn = player.querySelector(SKIP_SELECTORS);
     if (btn && isVisible(btn)) {
       btn.click();
