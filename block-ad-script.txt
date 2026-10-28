@@ -1,0 +1,23 @@
+- 광고 스크립트 차단
+
+Brave의 '스크립트 차단' 토글은 사이트 전체를 켜고 끄는 방식이라 특정 주소만 고를 수는 없지만, 사용자 지정 필터로 차단할 주소를 미리 등록할 수 있습니다. 이렇게 하면 JS는 켜 둔 채로 광고 스크립트만 막을 수 있어서, 처음 진입할 때 나오는 “Enable JavaScript and cookies” 화면도 피할 수 있습니다.
+
+등록 방법
+
+주소창에 brave://settings/shields/filters 입력
+맨 아래 "사용자 지정 필터" 입력란에 아래 규칙을 붙여넣고 저장
+
+||googletagmanager.com^$script,domain=ilkpop.in
+||doweralrostra.com^
+
+첫 줄은 ilkpop.in에서 불러오는 googletagmanager 스크립트만 막고, 다른 사이트에는 영향을 주지 않습니다. 둘째 줄은 광고 도메인이라 모든 사이트에서 통째로 차단해도 무방합니다. 규칙은 xs.doweralrostra.com 같은 하위 도메인까지 함께 막습니다.
+
+참고할 점
+
+이런 광고 도메인은 이름이 자주 바뀌어서, 새 도메인이 나타날 때마다 규칙을 추가해야 할 수 있습니다.
+대안으로 “ilkpop.in이 불러오는 외부 스크립트는 전부 차단하되 Cloudflare 확인 스크립트만 허용”하는 방식도 가능합니다. 광고 도메인이 바뀌어도 대응되지만 사이트 기능이 깨질 수 있습니다.
+
+*$script,third-party,domain=ilkpop.in
+@@||challenges.cloudflare.com^$domain=ilkpop.in
+
+처음에는 첫 번째 규칙만 쓰다가 광고가 계속 새어 나오면 두 번째 방식으로 바꿔 보시길 권합니다. 규칙을 적용해도 접속이 안 되거나 광고가 남으면 Brave 방패 아이콘의 스크립트 목록을 다시 캡처해서 보내 주세요. 그에 맞춰 규칙을 다듬겠습니다.
