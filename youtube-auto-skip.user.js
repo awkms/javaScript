@@ -20,7 +20,9 @@
     'button.ytp-ad-skip-button-modern',
   ].join(',');
 
-  const CHECK_INTERVAL_MS = 250; // 광고 중에만 폴링
+  const CHECK_INTERVAL_MS = 100; // 광고 중(및 직후)에만 폴링
+  // 광고가 끝난 뒤에도 이 시간(ms) 동안은 남아 있는 건너뛰기 버튼을 계속 찾아 클릭
+  const GRACE_MS = 8000;
 
   // true: 버튼을 기다리지 않고 광고 영상을 즉시 끝으로 넘김
   // false: 버튼이 나타난 뒤에만 클릭
@@ -44,11 +46,7 @@
   let wasAd = false;
   let samples = [];     // [{at: 시각(ms), pos: 재생위치(초)}] 최근 10초분
   let savedPos = null;  // 광고 시작 직전 재생 위치
-
-  function isVisible(el) {
-    return !!el && el.getClientRects().length > 0 &&
-           getComputedStyle(el).visibility !== 'hidden';
-  }
+  let graceUntil = 0;   // 광고 종료 후 버튼 탐색을 계속할 시각(ms)
 
   function inSeekable(v, t) {
     const s = v.seekable;
@@ -95,6 +93,13 @@
   }
 
   // ---- 광고 건너뛰기 ----
+  // 건너뛰기 버튼이 DOM에 있으면 보이는지 여부와 상관없이 바로 클릭
+  function clickSkipButton() {
+    if (!player) return;
+    const btn = player.querySelector(SKIP_SELECTORS);
+    if (btn) btn.click();
+  }
+
   function trySkip() {
     if (!player) return;
     if (FAST_FORWARD && video &&
@@ -103,22 +108,24 @@
         video.currentTime < video.duration - 0.1) {
       video.currentTime = video.duration;
     }
-    const btn = player.querySelector(SKIP_SELECTORS);
-    if (btn && isVisible(btn)) {
-      btn.click();
+    clickSkipButton();
+  }
+
+  function pollTick() {
+    if (player && player.classList.contains('ad-showing')) {
+      trySkip();
+    } else if (Date.now() < graceUntil) {
+      // 광고는 끝났지만 버튼이 남아 있을 수 있는 구간
+      clickSkipButton();
+    } else {
+      stopPolling();
     }
   }
 
   function startPolling() {
     if (timer) return;
-    trySkip();
-    timer = setInterval(() => {
-      if (!player || !player.classList.contains('ad-showing')) {
-        stopPolling();
-        return;
-      }
-      trySkip();
-    }, CHECK_INTERVAL_MS);
+    pollTick();
+    timer = setInterval(pollTick, CHECK_INTERVAL_MS);
   }
 
   function stopPolling() {
@@ -131,9 +138,13 @@
   function onPlayerClassChange() {
     const adNow = !!player && player.classList.contains('ad-showing');
     if (adNow && !wasAd) onAdStart();
-    else if (!adNow && wasAd) onAdEnd();
+    else if (!adNow && wasAd) {
+      onAdEnd();
+      graceUntil = Date.now() + GRACE_MS;
+    }
     wasAd = adNow;
-    if (adNow) startPolling();
+    // 광고 중이거나 종료 직후 유예 구간이면 폴링 유지 (유예가 끝나면 pollTick이 스스로 멈춤)
+    if (adNow || Date.now() < graceUntil) startPolling();
     else stopPolling();
   }
 
@@ -155,6 +166,7 @@
     wasAd = false;
     samples = [];
     savedPos = null;
+    graceUntil = 0;
     // 플레이어의 class 속성 변화(ad-showing 추가/제거)만 감시 — 부하 거의 없음
     classObserver = new MutationObserver(onPlayerClassChange);
     classObserver.observe(player, { attributes: true, attributeFilter: ['class'] });
