@@ -38,6 +38,8 @@
   const SAMPLE_LAG_MS = 1500;
   // 광고 후 위치가 기억한 위치보다 이 값(초) 넘게 앞서 있을 때만 되돌림
   const RESUME_TOLERANCE = 2;
+  // true: 광고 시작 직전의 재생 속도를 기억했다가 광고 후 다시 적용
+  const RESTORE_SPEED = true;
 
   let player = null;
   let video = null;
@@ -47,6 +49,7 @@
   let samples = [];     // [{at: 시각(ms), pos: 재생위치(초)}] 최근 10초분
   let savedPos = null;  // 광고 시작 직전 재생 위치
   let graceUntil = 0;   // 광고 종료 후 버튼 탐색을 계속할 시각(ms)
+  let savedRate = null; // 광고 시작 직전 재생 속도
 
   function inSeekable(v, t) {
     const s = v.seekable;
@@ -60,34 +63,43 @@
   function onTimeUpdate() {
     if (!video || !player || player.classList.contains('ad-showing')) return;
     const now = Date.now();
-    samples.push({ at: now, pos: video.currentTime });
+    samples.push({ at: now, pos: video.currentTime, rate: video.playbackRate });
     while (samples.length && now - samples[0].at > 10000) samples.shift();
   }
 
   function onAdStart() {
     savedPos = null;
-    if (!RESTORE_POSITION || !samples.length) return;
+    savedRate = null;
+    if (!samples.length) return;
     const limit = Date.now() - SAMPLE_LAG_MS;
     let pick = samples[0];
     for (const s of samples) {
       if (s.at <= limit) pick = s;
       else break;
     }
-    savedPos = pick.pos;
+    if (RESTORE_POSITION) savedPos = pick.pos;
+    if (RESTORE_SPEED) savedRate = pick.rate;
   }
 
   function onAdEnd() {
     const target = savedPos;
+    const rate = savedRate;
     savedPos = null;
-    if (target == null || !video) return;
+    savedRate = null;
+    if ((target == null && rate == null) || !video) return;
     let tries = 0;
-    // YouTube가 자체적으로 위치를 잡는 시간을 고려해 몇 번만 확인
+    // YouTube가 자체적으로 위치/속도를 잡는 시간을 고려해 몇 번 확인
     const tick = () => {
       if (!player || player.classList.contains('ad-showing')) return; // 다음 광고 시작됨
-      if (video.currentTime > target + RESUME_TOLERANCE && inSeekable(video, target)) {
+      if (target != null && video.currentTime > target + RESUME_TOLERANCE &&
+          inSeekable(video, target)) {
         video.currentTime = target;
       }
-      if (++tries < 4) setTimeout(tick, 400);
+      if (rate != null && video.playbackRate !== rate) {
+        if (typeof player.setPlaybackRate === 'function') player.setPlaybackRate(rate);
+        else video.playbackRate = rate;
+      }
+      if (++tries < 6) setTimeout(tick, 400);
     };
     setTimeout(tick, 100);
   }
@@ -166,6 +178,7 @@
     wasAd = false;
     samples = [];
     savedPos = null;
+    savedRate = null;
     graceUntil = 0;
     // 플레이어의 class 속성 변화(ad-showing 추가/제거)만 감시 — 부하 거의 없음
     classObserver = new MutationObserver(onPlayerClassChange);
