@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube/Netflix 광고 자동 처리
 // @namespace    local.john
-// @version      1.7.0
+// @version      1.7.2
 // @description  YouTube: 광고 시 음소거+10배속, 1초 간격 최대 6회 '건너뛰기' 클릭 후 음소거/속도 복원 + '광고중(초)' 표시 + 홈 '스폰서' 숨김 / Netflix: 광고 시 음소거+10배속, 광고 종료 시 복원
 // @match        https://www.youtube.com/*
 // @match        https://m.youtube.com/*
@@ -264,7 +264,7 @@
   const SKIP_MAX_CHECKS = 40;     // 광고 1건당 최대 확인 횟수(버튼이 아직 안 보일 때만 카운트) ≈ 6초
   const SKIP_WAIT_MAX_CHECKS = 270; // 버튼은 보이지만 아직 '클릭 가능' 상태가 아닐 때 기다리는 최대 횟수 ≈ 40초
   const SKIP_FORCE_AFTER = 27;    // 이 횟수 넘게 기다려도 '클릭 가능' 표식이 없으면 그냥 눌러 봄(마크업 변경 대비)
-  const MAX_AD_SECONDS = 600;     // 끝으로 보내기 안전장치: 이보다 긴 영상은 광고로 보지 않음
+  const MAX_AD_SECONDS = 600;     // 플레이어가 '광고 상태'로 확실하지 않을 때만 적용하는 안전장치 (광고 클래스가 있으면 길이 제한 없음)
   const AD_END_CONFIRM_MS = 700;  // 광고 감지가 이 시간 이상 끊겨야 '광고 종료'로 판단 (감지 깜빡임으로 폴링/오버레이가 초기화되는 것 방지)
   const RECHECK_AFTER_SKIP_MS = 300; // 건너뛰기 클릭 후에도 광고 상태가 이어지면 다음(연속) 광고로 간주
 
@@ -482,14 +482,16 @@
   }
 
   // 반환: { found: 버튼 보임, ready: 활성 버튼을 눌렀음, clicked: 무엇이든 눌렀음 }
-  function clickSkipButton(allowUnready) {
+  function clickSkipButton(allowUnready, quiet) {
     const targets = findSkipTargets();
     if (targets.length === 0) return { found: false, ready: false, clicked: false };
     const readyTarget = targets.find(isSkipReady);
     const t0 = readyTarget || (allowUnready ? targets[0] : null);
     if (!t0) return { found: true, ready: false, clicked: false };
-    log('클릭 대상:', t0.tagName, t0.className, (t0.textContent || '').trim().slice(0, 20),
-        readyTarget ? '(활성)' : '(활성 표식 없음)');
+    if (!quiet) {
+      log('클릭 대상:', t0.tagName, t0.className, (t0.textContent || '').trim().slice(0, 20),
+          readyTarget ? '(활성)' : '(활성 표식 없음)');
+    }
     pressElement(t0); // 한 번에 하나만 클릭 (중복 클릭으로 다음 광고까지 눌리는 것 방지)
     return { found: true, ready: !!readyTarget, clicked: true };
   }
@@ -513,6 +515,14 @@
   let lastEndClickAt = 0;
   let endCardLogged = false;
   // 대기가 길어질 때 원인 파악용 상태 덤프 (1초에 최대 1번)
+  // 광고 영상이 이미 사라지고(duration NaN, readyState 0) 플레이어가 ended-mode인 상태 = YouTube가 다음 단계를 준비하는 중.
+  // 이 상태에서는 건너뛸 영상이 없으므로 '다음 광고' 재시작/강제 클릭을 반복하지 않고, 활성 버튼만 가끔 누르며 대기 시간을 측정한다.
+  let endWaitSince = 0;
+  function isEndCardWait() {
+    if (!player || !video || !player.classList.contains('ended-mode')) return false;
+    const d = video.duration;
+    return !isFinite(d) || video.readyState === 0;
+  }
   let lastDiagAt = 0;
   function diag(tag) {
     const now = Date.now();
@@ -533,7 +543,7 @@
     if (!video) return false;
     if (video.ended) return true;
     const d = video.duration;
-    return isFinite(d) && d > 0 && d <= MAX_AD_SECONDS && video.currentTime >= d - 0.3;
+    return isFinite(d) && d > 0 && (d <= MAX_AD_SECONDS || isHardAd()) && video.currentTime >= d - 0.3;
   }
   function clickWhileEndCard() {
     if (!adVideoEnded()) { endCardLogged = false; return; }
@@ -553,13 +563,14 @@
                         player.classList.contains('ad-interrupting'));
   }
   let lastSeekAt = 0;
+  let lastIneffLogAt = 0;
   function seekAdToEnd() {
     if (!video || !isHardAd()) return; // 확실한 광고 상태(플레이어 클래스)일 때만
     const now = Date.now();
     if (now - lastSeekAt < 300) return;
     lastSeekAt = now;
     const d = video.duration;
-    if (isFinite(d) && d > 0 && d <= MAX_AD_SECONDS && video.currentTime < d - 0.2) {
+    if (isFinite(d) && d > 0 && video.currentTime < d - 0.2) { // isHardAd()가 보장되므로 10분 넘는 광고도 처리
       try { video.currentTime = d; } catch (e) { /* 무시 */ }
     }
   }
@@ -586,7 +597,7 @@
     let waited = 0;  // 버튼은 보이는데 아직 활성 전인 횟수
     const step = () => {
       if (!wasAd || !player) { log('건너뛰기 확인 중단: 광고 아님'); stopSkipPolling(); return; }
-      const res = clickSkipButton(waited >= SKIP_FORCE_AFTER);
+      const res = clickSkipButton(waited >= SKIP_FORCE_AFTER && !isEndCardWait()); // 종료 화면 대기 중엔 비활성 버튼 강제 클릭 안 함
       if (res.ready) {
         stopSkipPolling();
         onSkipped();
@@ -706,7 +717,25 @@
     if (wasAd) {
       showOverlay();
       const recheckDue = Date.now() > recheckAt;
-      if (adNow && adHandled && !isHardAd()) {
+      const endWait = adNow && isEndCardWait();
+      if (endWait) {
+        if (!endWaitSince) {
+          endWaitSince = Date.now();
+          log('종료 화면 대기 시작 (광고 영상 없음 · YouTube가 다음 단계를 준비 중)');
+        }
+        muteForAd();
+        speedUpForAd();
+        if (Date.now() - lastEndClickAt >= 300) { // 활성 버튼만, 조용히
+          lastEndClickAt = Date.now();
+          clickSkipButton(false, true);
+        }
+      } else if (endWaitSince) {
+        log('종료 화면 대기 끝: ' + ((Date.now() - endWaitSince) / 1000).toFixed(1) + '초');
+        endWaitSince = 0;
+      }
+      if (endWait) {
+        // 위에서 처리 완료 (아래 분기 건너뜀)
+      } else if (adNow && adHandled && !isHardAd()) {
         // 클릭 후 광고 플레이어 클래스가 사라짐 = 본편으로 돌아가는 중 → 본편이 빨리 지나가지 않게 즉시 복원
         restoreRate();
         restoreMute();
@@ -715,7 +744,11 @@
         beginNextAd();
       } else if (adNow && adHandled && recheckDue && clickWasIneffective()) {
         // 클릭했는데 같은 광고가 계속 재생 중 → 클릭이 먹히지 않은 것: 음소거+가속 후 광고를 끝으로 보냄
-        log('클릭이 광고를 끝내지 못함 → 광고 끝으로 이동');
+        if (Date.now() - lastIneffLogAt > 2000) {
+          lastIneffLogAt = Date.now();
+          log('클릭이 광고를 끝내지 못함 → 광고 끝으로 이동',
+              'd=' + (video ? video.duration : '-') + ' t=' + (video ? video.currentTime.toFixed(1) : '-'));
+        }
         muteForAd();
         speedUpForAd();
         seekAdToEnd();
@@ -727,7 +760,7 @@
         muteForAd();     // 광고 중 음소거 유지 (클릭 직후 대기 중에도)
         speedUpForAd();  // 광고 중 10배속 유지 (YouTube가 되돌려도 재적용)
       }
-      if (adNow) clickWhileEndCard(); // 영상이 끝난 뒤 종료 화면 대기 단축 (플레이어 클래스가 바뀌어도 계속 시도)
+      if (adNow && !endWait) clickWhileEndCard(); // 영상이 끝난 뒤 종료 화면 대기 단축 (플레이어 클래스가 바뀌어도 계속 시도)
       if (adNow) diag(adVideoEnded() ? '영상종료' : '진행');
     } else {
       trackNormalRate(); // 광고가 아닐 때 현재 속도/음소거 상태를 계속 기억
